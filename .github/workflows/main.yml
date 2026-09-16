@@ -25,38 +25,106 @@ jobs:
           distribution: temurin
           java-version: '21'
 
-      - name: Check project files
+      - name: Find project automatically
+        shell: bash
         run: |
-          test -f package.json
-          test -f index.html
-          test -f capacitor.config.ts
+          PROJECT=$(find . -maxdepth 5 \
+            -name package.json \
+            -not -path '*/node_modules/*' \
+            -not -path '*/.output/*' \
+            -not -path '*/android/*' \
+            -print -quit)
+
+          if [ -z "$PROJECT" ]; then
+            echo "ERROR: package.json not found!"
+            echo "Files in repository:"
+            find . -maxdepth 3 -type f | head -100
+            exit 1
+          fi
+
+          PROJECT_DIR=$(dirname "$PROJECT")
+
+          echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
+
+          echo "Project found in: $PROJECT_DIR"
 
       - name: Install dependencies
+        working-directory: ${{ env.PROJECT_DIR }}
         run: npm install
 
-      - name: Build offline app
+      - name: Build web application
+        working-directory: ${{ env.PROJECT_DIR }}
         run: npm run build
 
-      - name: Verify web build
-        run: test -f dist/index.html
+      - name: Prepare offline web files
+        working-directory: ${{ env.PROJECT_DIR }}
+        shell: bash
+        run: |
+          if [ -f "dist/index.html" ]; then
+            echo "Using dist folder"
+
+          elif [ -f ".output/public/index.html" ]; then
+            echo "Using .output/public folder"
+
+            mkdir -p dist
+            cp -a .output/public/. dist/
+
+          elif [ -f "build/client/index.html" ]; then
+            echo "Using build/client folder"
+
+            mkdir -p dist
+            cp -a build/client/. dist/
+
+          else
+            echo "ERROR: No static index.html found!"
+            find . -maxdepth 5 -name index.html
+            exit 1
+          fi
+
+          test -f dist/index.html
+
+      - name: Install Capacitor
+        working-directory: ${{ env.PROJECT_DIR }}
+        run: |
+          npm install @capacitor/core @capacitor/android
+          npm install -D @capacitor/cli
+
+      - name: Configure Capacitor
+        working-directory: ${{ env.PROJECT_DIR }}
+        shell: bash
+        run: |
+          if [ ! -f capacitor.config.ts ] && \
+             [ ! -f capacitor.config.json ] && \
+             [ ! -f capacitor.config.js ]; then
+
+            cat > capacitor.config.json <<'EOF'
+          {
+            "appId": "com.kompsaldo.app",
+            "appName": "KompSaldo",
+            "webDir": "dist"
+          }
+          EOF
+
+          fi
 
       - name: Configure Android SDK
         run: |
-          echo "ANDROID_HOME=$ANDROID_HOME"
           echo "$ANDROID_HOME/platform-tools" >> "$GITHUB_PATH"
           echo "$ANDROID_HOME/cmdline-tools/latest/bin" >> "$GITHUB_PATH"
 
       - name: Create Android project
+        working-directory: ${{ env.PROJECT_DIR }}
         run: |
           if [ ! -f android/gradlew ]; then
             npx cap add android
           fi
 
       - name: Sync Android project
+        working-directory: ${{ env.PROJECT_DIR }}
         run: npx cap sync android
 
       - name: Build APK
-        working-directory: android
+        working-directory: ${{ env.PROJECT_DIR }}/android
         run: |
           chmod +x gradlew
           ./gradlew assembleDebug --no-daemon
@@ -65,5 +133,5 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: KompSaldo-Android-APK
-          path: android/app/build/outputs/apk/debug/app-debug.apk
+          path: ${{ env.PROJECT_DIR }}/android/app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
